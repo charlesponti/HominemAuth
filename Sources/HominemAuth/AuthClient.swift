@@ -118,11 +118,14 @@ public actor AuthClient {
     }
 
     /// Confirms whether the stored session is still valid.
-    /// Returns the current user, or `nil` if absent/expired. Never throws
-    /// for HTTP errors — only for transport/Keychain failures.
+    ///
+    /// - Returns the current user, or `nil` when there is no session or the server says it is
+    ///   over (a 401/403, or a 200 with no session). Those two cases also clear the Keychain.
+    /// - Throws for anything that says nothing about the session: no connection, a 5xx from the
+    ///   server, a Keychain failure. The stored session is kept, so a server hiccup is never
+    ///   mistaken for being signed out.
     public func getSession() async throws -> AuthUser? {
-        let cookieHeader = cookieHeaderValue()
-        guard cookieHeader != nil else { return nil }
+        guard cookieHeaderValue() != nil else { return nil }
 
         let request = try makeRequest(path: "get-session")
         let data: Data
@@ -132,8 +135,18 @@ public actor AuthClient {
         } catch {
             throw mapNetworkError(error)
         }
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+        guard let http = response as? HTTPURLResponse else {
+            throw HominemAuthError.server(status: -1, message: nil)
+        }
+        switch http.statusCode {
+        case 200..<300:
+            break
+        case 401, 403:
+            store.clear()
             return nil
+        default:
+            logFailure(status: http.statusCode, url: http.url, data: data)
+            throw HominemAuthError.server(status: http.statusCode, message: decodeErrorMessage(from: data))
         }
         let payload = try? JSONDecoder().decode(SessionPayload.self, from: data)
         guard let user = payload?.user, payload?.session != nil else {
@@ -190,7 +203,8 @@ public actor AuthClient {
         try await authenticatedRequest(path: path, method: method, body: Optional<Data>.none)
     }
 
-    /// Authenticated request with a JSON-encodable body.
+    /// Authenticated request with a JSON-encodable body. A 401 clears the stored session and throws
+    /// `notAuthenticated`.
     /// - Parameters:
     ///   - path: Absolute API path, e.g. `/api/notes`. `/api/auth` calls should
     ///     go through the dedicated methods above instead.
@@ -217,6 +231,12 @@ public actor AuthClient {
             try validate(response: response, data: data)
             return data
         } catch let error as HominemAuthError {
+            // The server no longer accepts this session: forget it here too, so the next launch
+            // does not show a signed-in screen for a session that is gone.
+            if case .server(let status, _) = error, status == 401 {
+                store.clear()
+                throw HominemAuthError.notAuthenticated
+            }
             throw error
         } catch {
             throw mapNetworkError(error)

@@ -68,5 +68,22 @@ Env overrides used by GeoReview: `HOMINEM_API_URL`, `HOMINEM_API_PROD=1`,
 - **URLs**: local `http://localhost:4040`, portless `https://api.lvh.me:4200`,
   prod `https://api.ponti.io`.
 - **Errors**: `invalidOTP`, `rateLimited(retryAfter:)`, `server(status:message:)`,
-  `network`, `keychain`, `notAuthenticated`. `getSession()` returns nil (not throw)
-  for expired/invalid sessions. `signOut()` always clears locally.
+  `network`, `keychain`, `notAuthenticated`. `error.problem` sorts any of them into the
+  categories a screen needs (`badCode`, `tooManyAttempts`, `noService`, `signedOut`, `other`),
+  so every app words them the same way; a 502/503/504 counts as `noService`.
+- **Signed in or out**: `getSession()` returns nil, and clears the Keychain, only when the server
+  says the session is over (401/403, or a 200 with no session). A server error, no connection or
+  a Keychain failure throws and keeps the session, so a hiccup is never taken for a sign-out.
+  `authenticatedRequest` clears the session on a 401 and throws `notAuthenticated`.
+  `signOut()` always clears locally.
+- **Saving is all or nothing**: the token, cookies and user are written together; if any part
+  fails, what was written is removed.
+- **macOS**: a shared `keychainAccessGroup` only works in the data-protection keychain, which the
+  store uses whenever a group is given. The app must then be signed with the Keychain Sharing
+  entitlement. Without a group the file-based keychain is used, and the app needs no entitlement.
+
+## Versions
+
+`0.x` releases can change the API in a minor version. Pin to one minor:
+`.package(url: "https://github.com/charlesponti/HominemAuth.git", .upToNextMinor(from: "0.2.0"))`.
+See [CHANGELOG.md](CHANGELOG.md).

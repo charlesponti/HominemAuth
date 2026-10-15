@@ -39,3 +39,37 @@ public enum HominemAuthError: Error, LocalizedError, Sendable {
         }
     }
 }
+
+/// The few things an app screen cares about, so every app words them the same way. Words are the
+/// app's own; this is only the category.
+public enum AuthProblem: Sendable, Equatable {
+    /// The code is wrong or expired.
+    case badCode
+    /// Too many tries; wait.
+    case tooManyAttempts
+    /// No connection, or the server is down or overloaded (502, 503, 504). Calm, and worth retrying.
+    case noService
+    /// There is no session, or the server ended it. Sign in again.
+    case signedOut
+    /// Anything else.
+    case other
+}
+
+extension HominemAuthError {
+    /// The category of this error for a screen.
+    public var problem: AuthProblem {
+        switch self {
+        case .invalidOTP: return .badCode
+        case .rateLimited: return .tooManyAttempts
+        case .network: return .noService
+        case .notAuthenticated, .missingSessionToken: return .signedOut
+        case .server(let status, _), .badResponse(let status, _):
+            switch status {
+            case 401: return .signedOut
+            case 502, 503, 504: return .noService
+            default: return .other
+            }
+        case .invalidURL, .keychain: return .other
+        }
+    }
+}

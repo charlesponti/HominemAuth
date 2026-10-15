@@ -7,6 +7,10 @@ import Security
 /// app) backed by the same Apple Developer Team can share one session.
 /// Requires the Keychain Sharing entitlement + capability in each app when
 /// `accessGroup` is non-nil. Nil = app-private, no entitlement needed.
+///
+/// On macOS a shared access group only works in the data-protection keychain; the older
+/// file-based keychain ignores the group without an error. So when a group is given, the
+/// data-protection keychain is used on macOS (the app must then be signed with the entitlement).
 public struct KeychainStore: Sendable {
     private let service: String
     private let accessGroup: String?
@@ -27,22 +31,28 @@ public struct KeychainStore: Sendable {
         ]
         if let accessGroup {
             query[kSecAttrAccessGroup as String] = accessGroup
+            #if os(macOS)
+            query[kSecUseDataProtectionKeychain as String] = true
+            #endif
         }
         return query
     }
 
+    /// Saves `value`, replacing any existing one. Updates in place when the item exists, so a
+    /// failed write never leaves the key empty.
     public func set(_ value: String, forKey key: String) throws {
         let data = Data(value.utf8)
         let base = baseQuery(forKey: key)
-        // Replace any existing value for the same key.
-        SecItemDelete(base as CFDictionary)
-
-        var attributes = base
-        attributes[kSecValueData as String] = data
         // Available after first unlock, never syncs to iCloud. Works for
         // shared groups on the same device without extra setup.
-        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(attributes as CFDictionary, nil)
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        var status = SecItemUpdate(base as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            status = SecItemAdd(base.merging(attributes) { $1 } as CFDictionary, nil)
+        }
         guard status == errSecSuccess else {
             if status == errSecInteractionNotAllowed {
                 throw KeychainError.interactionNotAllowed
@@ -70,8 +80,11 @@ public struct KeychainStore: Sendable {
         return String(data: data, encoding: .utf8)
     }
 
+    /// Removes the item. A missing item is not an error.
     public func delete(_ key: String) throws {
-        let query = baseQuery(forKey: key)
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(baseQuery(forKey: key) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainError.writeFailed(status: Int(status))
+        }
     }
 }

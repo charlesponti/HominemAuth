@@ -8,7 +8,6 @@ public final class SessionStore: @unchecked Sendable {
     private let legacyTokenKey = "session_token"
     private let cookiesKey = "session_cookies/v1"
     private let userKey = "session_user"
-    private let legacyUserKey = "session_user"
 
     public init(keychain: KeychainStore = KeychainStore()) {
         self.keychain = keychain
@@ -53,22 +52,44 @@ public final class SessionStore: @unchecked Sendable {
         return try? JSONDecoder().decode(AuthUser.self, from: data)
     }
 
+    /// Saves the session. The token is written last and is what marks a session as present, so a
+    /// failure part-way never leaves a token beside cookies or a user from another session; what
+    /// was written is also removed (best effort), and the failure is thrown.
     public func save(session: AuthSession) throws {
-        try keychain.set(session.token, forKey: tokenKey)
-        if let cookies = session.cookies,
-           let data = try? JSONEncoder().encode(cookies),
-           let raw = String(data: data, encoding: .utf8) {
-            try? keychain.set(raw, forKey: cookiesKey)
-        }
-        if let user = session.user,
-           let data = try? JSONEncoder().encode(user),
-           let raw = String(data: data, encoding: .utf8) {
-            try? keychain.set(raw, forKey: userKey)
+        do {
+            // A part this session does not have is removed, so nothing of an earlier session
+            // (possibly another account) is left to be read back.
+            if let cookies = session.cookies {
+                try keychain.set(try Self.json(cookies), forKey: cookiesKey)
+            } else {
+                try keychain.delete(cookiesKey)
+            }
+            if let user = session.user {
+                try keychain.set(try Self.json(user), forKey: userKey)
+            } else {
+                try keychain.delete(userKey)
+            }
+            try keychain.set(session.token, forKey: tokenKey)
+        } catch {
+            clear()
+            throw error
         }
     }
 
+    /// Replaces only the cached user of the current session. A failure throws and leaves the
+    /// session itself untouched.
+    func updateCachedUser(_ user: AuthUser) throws {
+        try keychain.set(try Self.json(user), forKey: userKey)
+    }
+
+    private static func json<Value: Encodable>(_ value: Value) throws -> String {
+        let data = try JSONEncoder().encode(value)
+        guard let text = String(data: data, encoding: .utf8) else { throw KeychainError.unexpectedData }
+        return text
+    }
+
     public func clear() {
-        for key in [tokenKey, legacyTokenKey, cookiesKey, userKey, legacyUserKey] {
+        for key in [tokenKey, legacyTokenKey, cookiesKey, userKey] {
             try? keychain.delete(key)
         }
     }

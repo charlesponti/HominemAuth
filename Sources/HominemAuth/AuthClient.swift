@@ -125,7 +125,7 @@ public actor AuthClient {
     ///   server, a Keychain failure. The stored session is kept, so a server hiccup is never
     ///   mistaken for being signed out.
     public func getSession() async throws -> AuthUser? {
-        guard cookieHeaderValue() != nil else { return nil }
+        guard let sentCredentials = cookieHeaderValue() else { return nil }
 
         let request = try makeRequest(path: "get-session")
         let data: Data
@@ -138,24 +138,26 @@ public actor AuthClient {
         guard let http = response as? HTTPURLResponse else {
             throw HominemAuthError.server(status: -1, message: nil)
         }
-        switch http.statusCode {
-        case 200..<300:
-            break
-        case 401, 403:
-            store.clear()
+        if http.statusCode == 401 || http.statusCode == 403 {
+            clearIfUnchanged(sentCredentials)
             return nil
-        default:
-            logFailure(status: http.statusCode, url: http.url, data: data)
-            throw HominemAuthError.server(status: http.statusCode, message: decodeErrorMessage(from: data))
         }
+        // Everything else that is not a success keeps the session and keeps its category
+        // (rate limited with Retry-After, server error with its message).
+        try validate(response: response, data: data)
         let payload = try? JSONDecoder().decode(SessionPayload.self, from: data)
         guard let user = payload?.user, payload?.session != nil else {
-            store.clear()
+            clearIfUnchanged(sentCredentials)
             return nil
         }
-        // Refresh the cached user; keep original cookies.
-        if let token = store.sessionToken {
-            try? store.save(session: AuthSession(token: token, user: user, cookies: store.storedCookies()))
+        // A newer sign-in replaced the session while this check was in flight: its answer is
+        // about the old session, so neither refresh the cache nor claim the new one is valid.
+        guard cookieHeaderValue() == sentCredentials else { return try await getSession() }
+        // Refresh the cached user only; the token and cookies are never rewritten here.
+        do {
+            try store.updateCachedUser(user)
+        } catch let error as KeychainError {
+            throw HominemAuthError.keychain(error)
         }
         return user
     }
@@ -213,7 +215,7 @@ public actor AuthClient {
         method: String = "GET",
         body: Body?
     ) async throws -> Data {
-        guard cookieHeaderValue() != nil else {
+        guard let sentCredentials = cookieHeaderValue() else {
             throw HominemAuthError.notAuthenticated
         }
         guard let url = URL(string: path, relativeTo: baseURL) else {
@@ -234,7 +236,7 @@ public actor AuthClient {
             // The server no longer accepts this session: forget it here too, so the next launch
             // does not show a signed-in screen for a session that is gone.
             if case .server(let status, _) = error, status == 401 {
-                store.clear()
+                clearIfUnchanged(sentCredentials)
                 throw HominemAuthError.notAuthenticated
             }
             throw error
@@ -286,6 +288,12 @@ public actor AuthClient {
         }
         guard let token = store.sessionToken else { return nil }
         return "better-auth.session_token=\(token); __Secure-better-auth.session_token=\(token)"
+    }
+
+    /// Clears the stored session only if it is still the one the rejected request was sent with,
+    /// so a late 401 for an old session cannot erase a newer sign-in.
+    private func clearIfUnchanged(_ sentCredentials: String) {
+        if cookieHeaderValue() == sentCredentials { store.clear() }
     }
 
     private func validate(response: URLResponse, data: Data) throws {

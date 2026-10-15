@@ -117,6 +117,19 @@ struct AuthFlowTests {
         #expect(client.isAuthenticated)
     }
 
+    @Test("a rate-limited session check keeps its category and the session")
+    func sessionCheckRateLimited() async throws {
+        let (client, store) = try await signedIn { _ in reply(429) }
+        defer { store.clear() }
+        do {
+            _ = try await client.getSession()
+            Issue.record("expected an error")
+        } catch let error as HominemAuthError {
+            #expect(error.problem == .tooManyAttempts)
+        }
+        #expect(client.isAuthenticated)
+    }
+
     @Test("an authenticated request that gets a 401 clears the session and says notAuthenticated")
     func authenticatedUnauthorized() async throws {
         let (client, store) = try await signedIn { _ in reply(401) }

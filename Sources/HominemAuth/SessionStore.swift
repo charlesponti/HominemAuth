@@ -52,11 +52,11 @@ public final class SessionStore: @unchecked Sendable {
         return try? JSONDecoder().decode(AuthUser.self, from: data)
     }
 
-    /// Saves the session. All of it is written or none of it is: if any part fails, what was
-    /// written is removed, so a half-saved session can never be read back later.
+    /// Saves the session. The token is written last and is what marks a session as present, so a
+    /// failure part-way never leaves a token beside cookies or a user from another session; what
+    /// was written is also removed (best effort), and the failure is thrown.
     public func save(session: AuthSession) throws {
         do {
-            try keychain.set(session.token, forKey: tokenKey)
             // A part this session does not have is removed, so nothing of an earlier session
             // (possibly another account) is left to be read back.
             if let cookies = session.cookies {
@@ -69,10 +69,17 @@ public final class SessionStore: @unchecked Sendable {
             } else {
                 try keychain.delete(userKey)
             }
+            try keychain.set(session.token, forKey: tokenKey)
         } catch {
             clear()
             throw error
         }
+    }
+
+    /// Replaces only the cached user of the current session. A failure throws and leaves the
+    /// session itself untouched.
+    func updateCachedUser(_ user: AuthUser) throws {
+        try keychain.set(try Self.json(user), forKey: userKey)
     }
 
     private static func json<Value: Encodable>(_ value: Value) throws -> String {

@@ -1,5 +1,20 @@
-# HominemAuth: the studio verbs (see .studio/STUDIO.md).
-import '.studio/studio.just'
+# HominemAuth: the studio verbs live in project-installed skills (see skills-lock.json).
+SKILLS_DIR := justfile_directory() / ".agents/skills"
+
+# Installed skill set version.
+studio-version:
+    @cat "{{ SKILLS_DIR }}/studio-dev/scripts/VERSION"
+
+# Restore the installed skills from skills-lock.json.
+studio-update:
+    cd "{{ justfile_directory() }}" && npx -y skills experimental_install --yes
+
+# Fail when an installed skill is missing or the lockfile is.
+studio-check:
+    @test -f "{{ SKILLS_DIR }}/ship-ios/SKILL.md" || (echo "missing ship-ios: run just studio-update"; exit 1)
+    @test -f "{{ SKILLS_DIR }}/studio-dev/SKILL.md" || (echo "missing studio-dev: run just studio-update"; exit 1)
+    @test -f "{{ justfile_directory() }}/skills-lock.json" || (echo "missing skills-lock.json"; exit 1)
+    @echo "skills ok"
 
 default:
     @just --list
